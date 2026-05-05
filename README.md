@@ -1,20 +1,59 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# DentaTec Supplier Tool
 
-# Run and deploy your AI Studio app
+Supplier product feed processor and buyer ordering portal for DentaTec Dental-Handel GmbH.
 
-This contains everything you need to run your app locally.
+## Architecture
 
-View your app in AI Studio: https://ai.studio/apps/drive/15xukD8WjIwYpFqU-LTaMWqWolFv8Mc03
+- **Frontend**: React/TypeScript (Vite) — supplier feed analysis, product management, mass ordering
+- **Backend**: Node.js/Express — API proxy, Xentral catalog integration, authentication, Gemini AI
+- **Deployment**: Docker (monolithic) on Google Cloud Run
 
-## Run Locally
+## Prerequisites
 
-**Prerequisites:**  Node.js
+- Node.js 20+
+- Docker (for deployment)
+- Google Cloud SDK (`gcloud`)
 
+## Local Development
 
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+   ```bash
+   cd frontend && npm install
+   cd ../backend && npm install
+   ```
+
+2. Set environment variables in `backend/.env.local`:
+   ```
+   API_KEY=<your-gemini-api-key>
+   VIRTUAL_MARKETER_API_KEY=<your-vm-api-key>
+   XENTRAL_FEED_URL=<xentral-ndjson-feed-url>
+   ```
+
+3. Start the backend dev server:
+   ```bash
+   cd backend && npm run dev
+   ```
+
+4. Start the frontend dev server:
+   ```bash
+   cd frontend && npm run dev
+   ```
+
+## Deployment
+
+Set the required environment variables before running the deploy script:
+
+```powershell
+$env:API_KEY = "<your-gemini-api-key>"
+$env:VIRTUAL_MARKETER_API_KEY = "<your-vm-api-key>"
+$env:XENTRAL_FEED_URL = "<xentral-ndjson-feed-url>"
+.\deploy.ps1
+```
+
+**Cloud Run project:** `nice-beanbag-435211-a3`
+**Region:** `us-west1`
+**Service:** `new-supplier-product-feed-processor`
+
+## License
+
+Copyright Fabian Stamminger, The Platform Group GmbH & Co. KG. All rights reserved.

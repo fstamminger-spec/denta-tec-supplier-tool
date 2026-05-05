@@ -10,4 +10,5 @@ deploy.ps1
 deploy.sh
 deployment_info.md
 README.md
-C:\Users\FabianStamminger\.gemini\antigravity\brain\
+CLAUDE.md
+.claude/
