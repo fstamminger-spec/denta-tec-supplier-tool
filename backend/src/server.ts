@@ -7,7 +7,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Storage } from '@google-cloud/storage';
 import { parse } from 'csv-parse/sync';
-import { Readable } from 'stream';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,7 +16,23 @@ dotenv.config();
 const app = express();
 const port = process.env.PORT || 8080;
 
-app.use(cors());
+const ALLOWED_ORIGINS = [
+    'https://partner.denta-tec.com',
+    'https://new-supplier-product-feed-processor-320280941237.us-west1.run.app',
+    'https://new-supplier-product-feed-processor-tdbbaepqya-uw.a.run.app',
+    'http://localhost:5173',
+    'http://localhost:8080',
+];
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(null, true);
+        }
+    },
+    credentials: true,
+}));
 app.use(express.json({ limit: '50mb' }));
 
 // Serve static files from the 'public' folder
@@ -32,6 +47,16 @@ const XENTRAL_FEED_URL = process.env.XENTRAL_FEED_URL || "";
 if (!XENTRAL_FEED_URL) {
     console.error("WARNING: XENTRAL_FEED_URL is not set in environment variables!");
 }
+
+const VIRTUAL_MARKETER_API_KEY = process.env.VIRTUAL_MARKETER_API_KEY || "";
+
+const ALLOWED_PROXY_DOMAINS = [
+    'xentral.biz',
+    'denta-tec-generic-order-importer-320280941237.europe-west3.run.app',
+    'data-receiver-320280941237.europe-west3.run.app',
+    'mailforwarder-320280941237.europe-west1.run.app',
+    'customer-partner-login-320280941237.europe-west3.run.app',
+];
 
 const genAI = new (GoogleGenAI as any)({ apiKey: API_KEY });
 const storage = new Storage();
@@ -292,10 +317,33 @@ app.get('/api/xentral-catalog', async (_req, res) => {
     }
 });
 
-// Proxy for Feed URLs to avoid CORS
+function isAllowedPostDomain(targetUrl: string): boolean {
+    try {
+        const parsed = new URL(targetUrl);
+        return ALLOWED_PROXY_DOMAINS.some(domain => parsed.hostname === domain || parsed.hostname.endsWith('.' + domain));
+    } catch {
+        return false;
+    }
+}
+
+function isBlockedGetUrl(targetUrl: string): boolean {
+    try {
+        const parsed = new URL(targetUrl);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true;
+        const blocked = ['localhost', '127.0.0.1', '0.0.0.0', '169.254.169.254', 'metadata.google.internal'];
+        if (blocked.includes(parsed.hostname)) return true;
+        if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(parsed.hostname)) return true;
+        return false;
+    } catch {
+        return true;
+    }
+}
+
+// Proxy for Feed URLs to avoid CORS (GET — open for user-provided feed/image URLs, blocks internal IPs)
 app.get('/api/proxy-feed', async (req, res) => {
     const { url } = req.query;
     if (!url) return res.status(400).send("URL is required");
+    if (isBlockedGetUrl(url as string)) return res.status(403).send("URL not allowed");
 
     try {
         const response = await axios.get(url as string, {
@@ -312,6 +360,53 @@ app.get('/api/proxy-feed', async (req, res) => {
     } catch (error: any) {
         console.error("Proxy error:", error.message);
         res.status(500).send("Failed to fetch feed");
+    }
+});
+
+// Proxy for POST requests (login, orders, order submission, email, GCS signing — strict domain allowlist)
+app.post('/api/proxy-feed', async (req, res) => {
+    const url = req.query.url as string;
+    if (!url) return res.status(400).send("URL is required");
+    if (!isAllowedPostDomain(url)) return res.status(403).send("Domain not allowed");
+
+    try {
+        const response = await axios.post(url, req.body, {
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout: 30000,
+        });
+        res.json(response.data);
+    } catch (error: any) {
+        console.error("Proxy POST error:", error.message);
+        const status = error.response?.status || 500;
+        const data = error.response?.data || { error: "Proxy request failed" };
+        res.status(status).json(data);
+    }
+});
+
+// Proxy for Virtual Marketer API (keeps API key server-side)
+app.post('/api/virtual-marketer', async (req, res) => {
+    const { endpoint, body } = req.body;
+    if (!VIRTUAL_MARKETER_API_KEY) return res.status(500).json({ error: "VIRTUAL_MARKETER_API_KEY not configured" });
+
+    const allowedEndpoints = ['/api/product', '/api/ai'];
+    if (!allowedEndpoints.includes(endpoint)) return res.status(403).json({ error: "Endpoint not allowed" });
+
+    try {
+        const response = await axios.post(`https://api.virtual-marketer.de${endpoint}`, body, {
+            headers: {
+                'X-AUTH-TOKEN': VIRTUAL_MARKETER_API_KEY,
+                'Content-Type': 'application/json',
+            },
+            timeout: 30000,
+        });
+        res.json(response.data);
+    } catch (error: any) {
+        console.error("Virtual Marketer proxy error:", error.message);
+        const status = error.response?.status || 500;
+        res.status(status).json({ error: "Virtual Marketer request failed" });
     }
 });
 

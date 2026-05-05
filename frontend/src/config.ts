@@ -1,5 +1,4 @@
 export const BACKEND_URL = window.location.origin.includes('localhost') ? 'http://localhost:8080' : '';
-export const VIRTUAL_MARKETER_API_KEY = "M1e5wYxM-n3y1-gj4c-AZos-APbsnvg9TWxN";
 export const VIRTUAL_MARKETER_LOGO_URL = 'http://virtual-marketer.de/wp-content/uploads/2023/04/cropped-Virtual-Marketer-Logo-128x128-New.png';
 export const CORS_PROXY_URL = `${BACKEND_URL}/api/proxy-feed?url=`;
 
