@@ -413,11 +413,12 @@ app.get('/api/proxy-feed', async (req, res) => {
         return res.status(429).json({ error: 'Rate limit exceeded. Maximum 10 requests per minute.' });
     }
     
-    const { url } = req.query;
-    if (!url) return res.status(400).json({ error: 'URL is required' });
+    const urlParam = req.query.url;
+    if (!urlParam) return res.status(400).json({ error: 'URL is required' });
     
     // URL must be a string
-    const targetUrl = Array.isArray(url) ? url[0] : url;
+    const targetUrl = typeof urlParam === 'string' ? urlParam : (Array.isArray(urlParam) && urlParam.length > 0 ? urlParam[0] : '');
+    if (!targetUrl || typeof targetUrl !== 'string') return res.status(400).json({ error: 'URL must be a string' });
     
     // Strict allowlist check - must be in allowed domains
     if (!isAllowedGetDomain(targetUrl)) {
