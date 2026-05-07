@@ -7,6 +7,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Storage } from '@google-cloud/storage';
 import { parse } from 'csv-parse/sync';
+import dns from 'dns/promises';
+import { RateLimiterMemory } from 'rate-limiter-flexible';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,6 +53,21 @@ if (!XENTRAL_FEED_URL) {
 const VIRTUAL_MARKETER_API_KEY = process.env.VIRTUAL_MARKETER_API_KEY || "";
 
 const ALLOWED_PROXY_DOMAINS = [
+    'xentral.biz',
+    'denta-tec-generic-order-importer-320280941237.europe-west3.run.app',
+    'data-receiver-320280941237.europe-west3.run.app',
+    'mailforwarder-320280941237.europe-west1.run.app',
+    'customer-partner-login-320280941237.europe-west3.run.app',
+];
+
+// Rate limiter for proxy endpoints (10 requests per minute per IP)
+const rateLimiter = new RateLimiterMemory({
+    points: 10,
+    duration: 60,
+});
+
+// Allowed domains for GET proxy-feed (allowlist approach)
+const ALLOWED_GET_FEED_DOMAINS = [
     'xentral.biz',
     'denta-tec-generic-order-importer-320280941237.europe-west3.run.app',
     'data-receiver-320280941237.europe-west3.run.app',
@@ -326,31 +343,102 @@ function isAllowedPostDomain(targetUrl: string): boolean {
     }
 }
 
-function isBlockedGetUrl(targetUrl: string): boolean {
+function isPrivateIP(ip: string): boolean {
+    return /^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|169\.254\.|0\.|::1|fc|fd|fe80:)/.test(ip);
+}
+
+function isMetadataEndpoint(host: string): boolean {
+    return host === 'metadata.google.internal' || host === 'metadata';
+}
+
+async function resolveAndCheckIP(targetUrl: string): Promise<{ safe: boolean; error?: string }> {
     try {
         const parsed = new URL(targetUrl);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true;
-        const blocked = ['localhost', '127.0.0.1', '0.0.0.0', '169.254.169.254', 'metadata.google.internal'];
-        if (blocked.includes(parsed.hostname)) return true;
-        if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/.test(parsed.hostname)) return true;
-        return false;
-    } catch {
-        return true;
+        
+        // Only allow http and https
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return { safe: false, error: 'Invalid protocol' };
+        }
+        
+        // Check for known metadata endpoints
+        if (isMetadataEndpoint(parsed.hostname)) {
+            return { safe: false, error: 'Metadata endpoint blocked' };
+        }
+        
+        // DNS resolution with AAAA record check to prevent IPv6 bypass
+        const addresses = await dns.resolve4(parsed.hostname).catch(async () => {
+            try {
+                return await dns.resolve6(parsed.hostname);
+            } catch {
+                return [] as string[];
+            }
+        });
+        
+        if (!addresses || addresses.length === 0) {
+            return { safe: false, error: 'Could not resolve hostname' };
+        }
+        
+        // Check all resolved IPs for private/internal ranges
+        for (const addr of addresses) {
+            if (isPrivateIP(addr)) {
+                return { safe: false, error: 'Private IP blocked' };
+            }
+        }
+        
+        return { safe: true };
+    } catch (e) {
+        return { safe: false, error: 'Invalid URL' };
     }
 }
 
-// Proxy for Feed URLs to avoid CORS (GET — open for user-provided feed/image URLs, blocks internal IPs)
-app.get('/api/proxy-feed', async (req, res) => {
-    const { url } = req.query;
-    if (!url) return res.status(400).send("URL is required");
-    if (isBlockedGetUrl(url as string)) return res.status(403).send("URL not allowed");
-
+function isAllowedGetDomain(targetUrl: string): boolean {
     try {
-        const response = await axios.get(url as string, {
+        const parsed = new URL(targetUrl);
+        return ALLOWED_GET_FEED_DOMAINS.some(domain => 
+            parsed.hostname === domain || parsed.hostname.endsWith('.' + domain)
+        );
+    } catch {
+        return false;
+    }
+}
+
+// Proxy for Feed URLs to avoid CORS (GET — strict allowlist + DNS checks)
+app.get('/api/proxy-feed', async (req, res) => {
+    const clientIP = req.ip || req.socket.remoteAddress || 'unknown';
+    
+    // Rate limiting
+    try {
+        await rateLimiter.consume(clientIP);
+    } catch {
+        return res.status(429).json({ error: 'Rate limit exceeded. Maximum 10 requests per minute.' });
+    }
+    
+    const { url } = req.query;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+    
+    // URL must be a string
+    const targetUrl = Array.isArray(url) ? url[0] : url;
+    
+    // Strict allowlist check - must be in allowed domains
+    if (!isAllowedGetDomain(targetUrl)) {
+        return res.status(403).json({ error: 'Domain not in allowlist' });
+    }
+    
+    // DNS resolution check to prevent SSRF via DNS rebinding
+    const ipCheck = await resolveAndCheckIP(targetUrl);
+    if (!ipCheck.safe) {
+        return res.status(403).json({ error: 'URL validation failed' });
+    }
+    
+    try {
+        const response = await axios.get(targetUrl, {
             responseType: 'text',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+            },
+            timeout: 10000,
+            maxRedirects: 3,
+            validateStatus: (status) => status >= 200 && status < 400
         });
         const contentType = response.headers['content-type'];
         if (typeof contentType === 'string') {
@@ -359,7 +447,7 @@ app.get('/api/proxy-feed', async (req, res) => {
         res.send(response.data);
     } catch (error: any) {
         console.error("Proxy error:", error.message);
-        res.status(500).send("Failed to fetch feed");
+        res.status(500).json({ error: 'Failed to fetch feed' });
     }
 });
 
