@@ -136,9 +136,9 @@ const App = () => {
         const sessionJSON = localStorage.getItem('session');
         if (sessionJSON) {
             const session = JSON.parse(sessionJSON);
-            if (session.user && session.expiry && new Date().getTime() < session.expiry) {
+            if (session.user && session.expiry && session.token && new Date().getTime() < session.expiry) {
                 setUser(session.user);
-                if (session.token) setToken(session.token);
+                setToken(session.token);
                 if (!billingAddress.name) {
                     setBillingAddress({
                         name: session.user.name || '',
