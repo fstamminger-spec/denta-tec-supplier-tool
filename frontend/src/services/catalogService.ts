@@ -1,6 +1,7 @@
 
 import { DentaTecProduct } from "../types";
 import { BACKEND_URL } from "../config";
+import { getAuthHeaders } from "./authService";
 
 export const catalogService = {
     async fetchCatalog(forceRefresh = false): Promise<DentaTecProduct[]> {
@@ -20,7 +21,9 @@ export const catalogService = {
         }
 
         try {
-            const response = await fetch(`${BACKEND_URL}/api/xentral-catalog`);
+            const response = await fetch(`${BACKEND_URL}/api/xentral-catalog`, {
+                headers: getAuthHeaders()
+            });
             if (!response.ok) throw new Error(`The product catalog service returned an error. Status: ${response.status}.`);
 
             const catalog: DentaTecProduct[] = await response.json();

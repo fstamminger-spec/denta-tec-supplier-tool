@@ -1,13 +1,29 @@
 
 import { Order, User } from '../types';
-import { CORS_PROXY_URL } from '../config';
+import { BACKEND_URL } from '../config';
 
-const LOGIN_API_URL = 'https://customer-partner-login-320280941237.europe-west3.run.app/login';
-const ORDERS_API_URL = 'https://customer-partner-login-320280941237.europe-west3.run.app/orders';
+const TOKEN_KEY = 'authToken';
+
+export function getAuthHeaders(): Record<string, string> {
+    const token = localStorage.getItem(TOKEN_KEY);
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
+
+export function getToken(): string | null {
+    return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string): void {
+    localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearAuth(): void {
+    localStorage.removeItem(TOKEN_KEY);
+}
 
 export const authService = {
-    async login(email: string, password: string): Promise<User> {
-        const response = await fetch(`${CORS_PROXY_URL}${LOGIN_API_URL}`, {
+    async login(email: string, password: string): Promise<{ user: User; token: string }> {
+        const response = await fetch(`${BACKEND_URL}/api/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
@@ -15,16 +31,17 @@ export const authService = {
 
         if (response.ok) {
             const data = await response.json();
-            return data.user;
+            setToken(data.token);
+            return { user: data.user, token: data.token };
         } else {
-             throw new Error("Invalid credentials");
+            throw new Error("Invalid credentials");
         }
     },
 
     async fetchOrders(customerNumber: string): Promise<Order[]> {
-        const response = await fetch(`${CORS_PROXY_URL}${ORDERS_API_URL}`, {
+        const response = await fetch(`${BACKEND_URL}/api/orders`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
             body: JSON.stringify({ customer_number: customerNumber }),
         });
 

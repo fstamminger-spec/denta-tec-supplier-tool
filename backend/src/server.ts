@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { Storage } from '@google-cloud/storage';
 import { parse } from 'csv-parse/sync';
+import jwt from 'jsonwebtoken';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +50,19 @@ if (!XENTRAL_FEED_URL) {
 }
 
 const VIRTUAL_MARKETER_API_KEY = process.env.VIRTUAL_MARKETER_API_KEY || "";
+
+const AUTH_SECRET = process.env.AUTH_KEY || 'dev-secret';
+
+function requireAuth(req: any, res: any, next: any) {
+    const header = req.headers.authorization;
+    if (!header?.startsWith('Bearer ')) return res.status(401).json({ error: 'Token required' });
+    try {
+        req.user = jwt.verify(header.slice(7), AUTH_SECRET);
+        next();
+    } catch {
+        res.status(401).json({ error: 'Invalid token' });
+    }
+}
 
 const ALLOWED_PROXY_DOMAINS = [
     'xentral.biz',
@@ -183,7 +197,12 @@ app.post('/api/login', async (req, res) => {
         }
 
         if (userFound) {
-            res.json({ message: "Login successful.", user: userFound });
+            const token = jwt.sign(
+                { kundennummer: userFound.kundennummer, email: userFound.email },
+                AUTH_SECRET,
+                { expiresIn: '8h' }
+            );
+            res.json({ message: "Login successful.", user: userFound, token });
         } else {
             res.status(401).json({ error: "Invalid email or Kundennummer/PLZ combination." });
         }
@@ -194,10 +213,13 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-app.post('/api/orders', async (req, res) => {
+app.post('/api/orders', requireAuth, async (req: any, res) => {
     const { customer_number } = req.body;
     if (!customer_number) {
         return res.status(400).json({ error: "Feld 'customer_number' fehlt." });
+    }
+    if (req.user.kundennummer !== String(customer_number)) {
+        return res.status(403).json({ error: "Access denied." });
     }
 
     try {
@@ -275,7 +297,7 @@ function mapXentralProduct(raw: any): any {
     };
 }
 
-app.get('/api/xentral-catalog', async (_req, res) => {
+app.get('/api/xentral-catalog', requireAuth, async (_req, res) => {
     if (!XENTRAL_FEED_URL) {
         return res.status(500).json({ error: "XENTRAL_FEED_URL is not configured." });
     }
@@ -339,8 +361,8 @@ function isBlockedGetUrl(targetUrl: string): boolean {
     }
 }
 
-// Proxy for Feed URLs to avoid CORS (GET — open for user-provided feed/image URLs, blocks internal IPs)
-app.get('/api/proxy-feed', async (req, res) => {
+// Proxy for Feed URLs to avoid CORS (GET — blocks internal IPs)
+app.get('/api/proxy-feed', requireAuth, async (req, res) => {
     const { url } = req.query;
     if (!url) return res.status(400).send("URL is required");
     if (isBlockedGetUrl(url as string)) return res.status(403).send("URL not allowed");
@@ -363,8 +385,8 @@ app.get('/api/proxy-feed', async (req, res) => {
     }
 });
 
-// Proxy for POST requests (login, orders, order submission, email, GCS signing — strict domain allowlist)
-app.post('/api/proxy-feed', async (req, res) => {
+// Proxy for POST requests (order submission, email, GCS signing — strict domain allowlist)
+app.post('/api/proxy-feed', requireAuth, async (req, res) => {
     const url = req.query.url as string;
     if (!url) return res.status(400).send("URL is required");
     if (!isAllowedPostDomain(url)) return res.status(403).send("Domain not allowed");
@@ -386,8 +408,7 @@ app.post('/api/proxy-feed', async (req, res) => {
     }
 });
 
-// Proxy for Virtual Marketer API (keeps API key server-side)
-app.post('/api/virtual-marketer', async (req, res) => {
+app.post('/api/virtual-marketer', requireAuth, async (req, res) => {
     const { endpoint, body } = req.body;
     if (!VIRTUAL_MARKETER_API_KEY) return res.status(500).json({ error: "VIRTUAL_MARKETER_API_KEY not configured" });
 
@@ -410,36 +431,171 @@ app.post('/api/virtual-marketer', async (req, res) => {
     }
 });
 
-// Proxy for Gemini API
-app.post('/api/gemini/generate', async (req, res) => {
-    const { model, contents, config } = req.body;
+// --- DEDICATED AI ENDPOINTS (all require auth) ---
+
+app.post('/api/ai/extract-order', requireAuth, async (req, res) => {
+    const { type, text, fileBase64, mimeType } = req.body;
+    const prompt = `Analyze this purchase order document.
+Extract the order number and all line items (productNumber, productName, quantity, price), and any special instructions.
+Respond ONLY with JSON matching this exact schema:
+{
+  "orderNumber": "string",
+  "items": [
+    { "productNumber": "string", "productName": "string", "quantity": 1, "price": 10.5 }
+  ],
+  "specialInstructions": "string"
+}`;
+
+    const parts: any[] = [];
+    if (type === 'file' && fileBase64) {
+        parts.push({ inlineData: { mimeType: mimeType || 'application/pdf', data: fileBase64 } });
+        parts.push({ text: prompt });
+    } else {
+        parts.push({ text: prompt });
+        if (text) parts.push({ text });
+    }
+
     try {
-        const result = await genAI.models.generateContent({ model, contents, config });
+        const result = await genAI.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [{ role: 'user', parts }],
+            config: { responseMimeType: "application/json" }
+        });
         res.json({ text: result.text });
     } catch (error: any) {
-        console.error("Gemini error:", error.message);
+        console.error("Extract order error:", error.message);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Special endpoint for Visualizations (Images)
-app.post('/api/gemini/visualize', async (req, res) => {
-    const { contents } = req.body;
+app.post('/api/ai/match-product', requireAuth, async (req, res) => {
+    const { productNumber, productName, catalogContext } = req.body;
+    const prompt = `You are a dental product matching expert. Find the best matching product SKU from the catalog for the given order item.
+
+IMPORTANT matching rules:
+- SKU prefixes may differ between brands (e.g., "WP-" for Woodpecker, "xp-" for Xpedent) but the product code after the prefix is the key identifier
+- Match by product type, model number, and compatibility system (EMS, Satelec/SAT, KaVo/KAV, NSK)
+- A Woodpecker tip "WP-E10D-EMS" should match an Xpedent equivalent "xp-E10D-EMS" if the model number (E10D) and system (EMS) match
+- Consider that products may be listed under different brand names but serve the same function
+- Only return null if there is truly no comparable product in the catalog
+
+Catalog (format: sku|produktname|marke|hersteller-nr.):
+${catalogContext}
+
+Order item to match:
+Product Number: ${productNumber}
+Product Name: ${productName || 'N/A'}
+
+Respond ONLY with JSON: { "matchedSku": "sku_here" } or { "matchedSku": null } if no match exists.`;
+
     try {
         const result = await genAI.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            config: { responseMimeType: "application/json" }
+        });
+        res.json({ text: result.text });
+    } catch (error: any) {
+        console.error("Match product error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/ai/map-headers', requireAuth, async (req, res) => {
+    const { headers } = req.body;
+    const prompt = `You are an expert in product data and shopping feeds. Analyze the following list of column headers from a supplier file: ${JSON.stringify(headers)}.
+
+Map them to the standard Google Shopping attributes: 'id', 'title', 'description', 'link', 'image_link', 'price', 'brand', 'gtin', 'mpn', 'cost_of_goods_sold'.
+
+Respond ONLY with a single JSON object where keys are the original headers and values are the mapped Google attribute (or null if no match).`;
+
+    try {
+        const result = await genAI.models.generateContent({
+            model: 'gemini-flash-latest',
+            contents: [{ parts: [{ text: prompt }] }],
+            config: { responseMimeType: "application/json" }
+        });
+        res.json({ text: result.text });
+    } catch (error: any) {
+        console.error("Map headers error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/ai/optimize-title', requireAuth, async (req, res) => {
+    const { title, description, brand } = req.body;
+    const prompt = `Optimize this product title for Google Shopping SEO (German).
+Current Title: "${title}"
+Brand: "${brand || ''}"
+Context from Description: "${(description || '').substring(0, 500)}..."
+
+Rules:
+1. Place strong keywords (Brand, Product Type, Key Feature) at the beginning.
+2. Keep it under 150 characters (ideal 70-100).
+3. No promotional text (e.g. "Sale", "Best Offer").
+4. Return ONLY the new title text.`;
+
+    try {
+        const result = await genAI.models.generateContent({
+            model: 'gemini-flash-latest',
+            contents: [{ parts: [{ text: prompt }] }]
+        });
+        res.json({ text: result.text });
+    } catch (error: any) {
+        console.error("Optimize title error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/ai/analyze-product', requireAuth, async (req, res) => {
+    const { title, description } = req.body;
+    const prompt = `Analyze product "${title}" & desc "${(description || '').substring(0, 1000)}".
+1. Dominant color (or 'Multicolor').
+2. Google Product Category string.
+3. Risk Score ('Low', 'Medium', 'High').
+4. Image CVR style ('Action Shot', 'On Model', 'Flat Lay', '3D Render', 'Product Only', 'Other').
+Output JSON.`;
+
+    try {
+        const result = await genAI.models.generateContent({
+            model: 'gemini-flash-latest',
+            contents: [{ parts: [{ text: prompt }] }],
+            config: { responseMimeType: "application/json" }
+        });
+        res.json({ text: result.text });
+    } catch (error: any) {
+        console.error("Analyze product error:", error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post('/api/ai/visualize-product', requireAuth, async (req, res) => {
+    const { title, description } = req.body;
+    const identificationPrompt = `Context: Product "${title}". Description: "${(description || '').substring(0, 500)}".
+Task: Create a prompt for an AI image generator to generate a photorealistic "Action Shot".
+Output ONLY the prompt text.`;
+
+    try {
+        const contextResult = await genAI.models.generateContent({
+            model: 'gemini-flash-latest',
+            contents: [{ parts: [{ text: identificationPrompt }] }]
+        });
+        const imagePrompt = contextResult.text;
+
+        const imageResult = await genAI.models.generateContent({
             model: 'gemini-2.0-flash',
-            contents,
+            contents: [{ parts: [{ text: imagePrompt }] }],
             config: { responseModalities: [Modality.IMAGE] }
         });
 
-        const inlineData = result.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+        const inlineData = imageResult.candidates?.[0]?.content?.parts?.[0]?.inlineData;
         if (inlineData?.data) {
             res.json({ image: inlineData.data });
         } else {
-            res.status(500).send("No image generated");
+            res.status(500).json({ error: "No image generated" });
         }
     } catch (error: any) {
-        console.error("Visualize error:", error.message);
+        console.error("Visualize product error:", error.message);
         res.status(500).json({ error: error.message });
     }
 });

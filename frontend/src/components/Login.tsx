@@ -4,7 +4,7 @@ import { User } from '../types';
 import { authService } from '../services/authService';
 
 interface LoginProps {
-  onLoginSuccess: (user: User) => void;
+  onLoginSuccess: (user: User, token: string) => void;
   logoUrl: string;
 }
 
@@ -67,10 +67,10 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, logoUrl }) => {
         setError(null);
 
         try {
-            const user = await authService.login(email, password);
+            const { user, token } = await authService.login(email, password);
             localStorage.removeItem('loginAttempts');
             localStorage.removeItem('loginLockout');
-            onLoginSuccess(user);
+            onLoginSuccess(user, token);
         } catch (err: any) {
             const attemptsData = JSON.parse(localStorage.getItem('loginAttempts') || '{"count": 0}');
             const currentAttempts = attemptsData.count + 1;

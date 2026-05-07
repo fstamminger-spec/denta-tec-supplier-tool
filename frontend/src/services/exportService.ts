@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import { ParsedProduct, User } from '../types';
 import { cleanStringForUrl, parsePrice } from '../utils';
 import { CORS_PROXY_URL } from '../config';
+import { getAuthHeaders } from './authService';
 
 export const exportService = {
   generateCsvString(products: ParsedProduct[], supplierName: string, idPrefix: string): string {
@@ -113,7 +114,7 @@ export const exportService = {
                  if (p.image_link) {
                      try {
                         const proxyUrl = `${CORS_PROXY_URL}${encodeURIComponent(p.image_link)}`;
-                        const response = await fetch(proxyUrl);
+                        const response = await fetch(proxyUrl, { headers: getAuthHeaders() });
                         if (response.ok) {
                             const blob = await response.blob();
                             let fileNameBase = `${dentaTecProductNumber}-${cleanBrand}-${cleanTitle}`;
@@ -159,7 +160,7 @@ export const exportService = {
         try {
             signResponse = await fetch(`${CORS_PROXY_URL}${signUrlEndpoint}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify({ title: supplierName, filename: filename, contentType: contentType })
             });
         } catch (e: any) {
@@ -192,7 +193,7 @@ export const exportService = {
         let response;
         try {
             response = await fetch(`${CORS_PROXY_URL}${emailEndpoint}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+                method: 'POST', headers: { 'Content-Type': 'application/json', ...getAuthHeaders() }, body: JSON.stringify(payload)
             });
         } catch (e: any) {
              throw new Error(`Connection to Email Service failed: ${e.message}`);
@@ -209,8 +210,8 @@ export const exportService = {
       let response;
       try {
           response = await fetch(`${CORS_PROXY_URL}${orderEndpoint}`, {
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' }, 
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify(orderData)
           });
       } catch (e: any) {

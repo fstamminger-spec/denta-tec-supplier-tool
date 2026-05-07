@@ -1,5 +1,6 @@
 import { ParsedProduct } from "../types";
 import { BACKEND_URL } from "../config";
+import { getAuthHeaders } from "./authService";
 
 const AI_ERROR_MSG = "AI Service unavailable. Please try again later.";
 
@@ -27,21 +28,11 @@ function getMimeType(file: File): string {
 
 export const geminiService = {
     getGoogleShoppingHeaderMapping: async (originalHeaders: string[]): Promise<Record<string, string | null>> => {
-        const prompt = `You are an expert in product data and shopping feeds. Analyze the following list of column headers from a supplier file: ${JSON.stringify(originalHeaders)}.
-    
-    Map them to the standard Google Shopping attributes: 'id', 'title', 'description', 'link', 'image_link', 'price', 'brand', 'gtin', 'mpn', 'cost_of_goods_sold'.
-    
-    Respond ONLY with a single JSON object where keys are the original headers and values are the mapped Google attribute (or null if no match).`;
-
         try {
-            const response = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
+            const response = await fetch(`${BACKEND_URL}/api/ai/map-headers`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: 'gemini-flash-latest',
-                    contents: [{ parts: [{ text: prompt }] }],
-                    config: { responseMimeType: "application/json" }
-                })
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ headers: originalHeaders })
             });
             const data = await response.json();
             let jsonStr = data.text.trim();
@@ -58,25 +49,11 @@ export const geminiService = {
     },
 
     optimizeProductTitle: async (currentTitle: string, description: string, brand?: string): Promise<string> => {
-        const prompt = `Optimize this product title for Google Shopping SEO (German).
-      Current Title: "${currentTitle}"
-      Brand: "${brand || ''}"
-      Context from Description: "${description.substring(0, 500)}..."
-      
-      Rules:
-      1. Place strong keywords (Brand, Product Type, Key Feature) at the beginning.
-      2. Keep it under 150 characters (ideal 70-100).
-      3. No promotional text (e.g. "Sale", "Best Offer").
-      4. Return ONLY the new title text.`;
-
         try {
-            const response = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
+            const response = await fetch(`${BACKEND_URL}/api/ai/optimize-title`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: 'gemini-flash-latest',
-                    contents: [{ parts: [{ text: prompt }] }]
-                })
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ title: currentTitle, description, brand })
             });
             const data = await response.json();
             return data.text.trim();
@@ -86,22 +63,11 @@ export const geminiService = {
     },
 
     analyzeProductAttributes: async (product: ParsedProduct): Promise<any> => {
-        const contextText = `Analyze product "${product.title}" & desc "${product.description.substring(0, 1000)}". 
-      1. Dominant color (or 'Multicolor'). 
-      2. Google Product Category string.
-      3. Risk Score ('Low', 'Medium', 'High').
-      4. Image CVR style ('Action Shot', 'On Model', 'Flat Lay', '3D Render', 'Product Only', 'Other').
-      Output JSON.`;
-
         try {
-            const response = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
+            const response = await fetch(`${BACKEND_URL}/api/ai/analyze-product`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: 'gemini-flash-latest',
-                    contents: [{ parts: [{ text: contextText }] }],
-                    config: { responseMimeType: "application/json" }
-                })
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ title: product.title, description: product.description })
             });
             const data = await response.json();
             const result = JSON.parse(data.text);
@@ -119,71 +85,38 @@ export const geminiService = {
     },
 
     visualizeProduct: async (product: ParsedProduct): Promise<string | null> => {
-        const identificationPrompt = `Context: Product "${product.title}". Description: "${product.description.substring(0, 500)}".
-      Task: Create a prompt for an AI image generator to generate a photorealistic "Action Shot".
-      Output ONLY the prompt text.`;
-
         try {
-            const contextResponse = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
+            const response = await fetch(`${BACKEND_URL}/api/ai/visualize-product`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: 'gemini-flash-latest',
-                    contents: [{ parts: [{ text: identificationPrompt }] }]
-                })
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify({ title: product.title, description: product.description })
             });
-            const contextData = await contextResponse.json();
-            const imagePrompt = contextData.text;
+            const data = await response.json();
 
-            const imageResponse = await fetch(`${BACKEND_URL}/api/gemini/visualize`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: { parts: [{ text: imagePrompt }] }
-                })
-            });
-            const imageData = await imageResponse.json();
-
-            if (imageData.image) {
-                return `data:image/png;base64,${imageData.image}`;
+            if (data.image) {
+                return `data:image/png;base64,${data.image}`;
             }
             return null;
         } catch (e) { throw new Error(AI_ERROR_MSG); }
     },
 
     processMassOrderAI: async (inputType: 'text' | 'file', textOrFile: string | File): Promise<any> => {
-        const prompt = `Analyze this purchase order document.
-Extract the order number and all line items (productNumber, productName, quantity, price), and any special instructions.
-Respond ONLY with JSON matching this exact schema:
-{
-  "orderNumber": "string",
-  "items": [
-    { "productNumber": "string", "productName": "string", "quantity": 1, "price": 10.5 }
-  ],
-  "specialInstructions": "string"
-}`;
-
-        const parts: any[] = [];
+        const body: any = {};
 
         if (inputType === 'file' && textOrFile instanceof File) {
-            const base64Data = await fileToBase64(textOrFile);
-            const mimeType = getMimeType(textOrFile);
-            parts.push({ inlineData: { mimeType, data: base64Data } });
-            parts.push({ text: prompt });
+            body.type = 'file';
+            body.fileBase64 = await fileToBase64(textOrFile);
+            body.mimeType = getMimeType(textOrFile);
         } else {
-            parts.push({ text: prompt });
-            parts.push({ text: textOrFile as string });
+            body.type = 'text';
+            body.text = textOrFile as string;
         }
 
         try {
-            const response = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
+            const response = await fetch(`${BACKEND_URL}/api/ai/extract-order`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: 'gemini-2.5-flash',
-                    contents: [{ role: 'user', parts }],
-                    config: { responseMimeType: "application/json" }
-                })
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+                body: JSON.stringify(body)
             });
             const data = await response.json();
             return JSON.parse(data.text);
@@ -191,31 +124,14 @@ Respond ONLY with JSON matching this exact schema:
     },
 
     findBestMatchAI: async (item: { productNumber: string, productName?: string }, catalogContextString: string): Promise<string | null> => {
-        const prompt = `You are a dental product matching expert. Find the best matching product SKU from the catalog for the given order item.
-
-IMPORTANT matching rules:
-- SKU prefixes may differ between brands (e.g., "WP-" for Woodpecker, "xp-" for Xpedent) but the product code after the prefix is the key identifier
-- Match by product type, model number, and compatibility system (EMS, Satelec/SAT, KaVo/KAV, NSK)
-- A Woodpecker tip "WP-E10D-EMS" should match an Xpedent equivalent "xp-E10D-EMS" if the model number (E10D) and system (EMS) match
-- Consider that products may be listed under different brand names but serve the same function
-- Only return null if there is truly no comparable product in the catalog
-
-Catalog (format: sku|produktname|marke|hersteller-nr.):
-${catalogContextString}
-
-Order item to match:
-Product Number: ${item.productNumber}
-Product Name: ${item.productName || 'N/A'}
-
-Respond ONLY with JSON: { "matchedSku": "sku_here" } or { "matchedSku": null } if no match exists.`;
         try {
-            const response = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
+            const response = await fetch(`${BACKEND_URL}/api/ai/match-product`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
                 body: JSON.stringify({
-                    model: 'gemini-2.5-flash',
-                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-                    config: { responseMimeType: "application/json" }
+                    productNumber: item.productNumber,
+                    productName: item.productName,
+                    catalogContext: catalogContextString
                 })
             });
             const data = await response.json();

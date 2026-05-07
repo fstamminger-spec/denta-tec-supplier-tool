@@ -1,11 +1,12 @@
 
 import { BACKEND_URL } from "../config";
+import { getAuthHeaders } from "./authService";
 
 export const optimizationService = {
     async fetchModels(): Promise<{name: string}[]> {
         const response = await fetch(`${BACKEND_URL}/api/virtual-marketer`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
             body: JSON.stringify({ endpoint: "/api/product", body: {} })
         });
         if (!response.ok) throw new Error(`Failed to fetch models.`);
@@ -26,7 +27,7 @@ export const optimizationService = {
 
         const response = await fetch(`${BACKEND_URL}/api/virtual-marketer`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...getAuthHeaders() },
             body: JSON.stringify({ endpoint: "/api/ai", body: { product: modelName, segment: prompt } })
         });
 

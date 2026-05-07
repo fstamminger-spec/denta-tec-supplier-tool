@@ -7,7 +7,7 @@ import { analyzeTitle, analyzeDescription, analyzeKeywordDensity } from './quali
 import * as XLSX from 'xlsx';
 
 // Services
-import { authService } from './services/authService';
+import { authService, setToken, clearAuth } from './services/authService';
 import { feedService } from './services/feedService';
 import { geminiService } from './services/geminiService';
 import { catalogService } from './services/catalogService';
@@ -138,7 +138,7 @@ const App = () => {
             const session = JSON.parse(sessionJSON);
             if (session.user && session.expiry && new Date().getTime() < session.expiry) {
                 setUser(session.user);
-                // Pre-fill billing address from user
+                if (session.token) setToken(session.token);
                 if (!billingAddress.name) {
                     setBillingAddress({
                         name: session.user.name || '',
@@ -148,9 +148,9 @@ const App = () => {
                         country: session.user.land || 'Deutschland'
                     });
                 }
-            } else { localStorage.removeItem('session'); }
+            } else { localStorage.removeItem('session'); clearAuth(); }
         }
-    } catch (error) { localStorage.removeItem('session'); } finally { setIsAuthLoading(false); }
+    } catch (error) { localStorage.removeItem('session'); clearAuth(); } finally { setIsAuthLoading(false); }
   }, []);
   
   // Load Catalog on mount or tab switch to Mass Order
@@ -164,9 +164,10 @@ const App = () => {
       if (userRole === 'buyer') loadCatalog();
   }, [userRole]);
 
-  const handleLoginSuccess = (userData: User) => {
-    const expiry = new Date().getTime() + 30 * 24 * 60 * 60 * 1000;
-    localStorage.setItem('session', JSON.stringify({ user: userData, expiry }));
+  const handleLoginSuccess = (userData: User, token: string) => {
+    const expiry = new Date().getTime() + 8 * 60 * 60 * 1000;
+    localStorage.setItem('session', JSON.stringify({ user: userData, expiry, token }));
+    setToken(token);
     setUser(userData);
     if (!localStorage.getItem('legalCompanyName') || localStorage.getItem('legalCompanyName') === '""') {
         setLegalCompanyName(userData.name);
@@ -181,7 +182,7 @@ const App = () => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('session'); localStorage.removeItem('userRole'); setUser(null); setUserRole(null);
+    localStorage.removeItem('session'); localStorage.removeItem('userRole'); clearAuth(); setUser(null); setUserRole(null);
   };
 
   const getNumericScoreCategory = (numericScore: number): QualityScoreName => {
