@@ -112,6 +112,7 @@ const App = () => {
   } = useMassOrderLogic(dentaTecProducts);
 
   const [massOrderFile, setMassOrderFile] = useState<File | null>(null);
+  const [massOrderText, setMassOrderText] = useState('');
   const [billingAddress, setBillingAddress] = useState<Address>({ name: '', street: '', zip: '', city: '', country: 'Deutschland' });
   const [shippingAddresses, setShippingAddresses] = useState<Address[]>([]);
   
@@ -914,9 +915,9 @@ const App = () => {
                         {massOrderInputType === 'file' ? (
                             <input type="file" onChange={e => setMassOrderFile(e.target.files?.[0] || null)} style={styles.input} />
                         ) : (
-                            <textarea placeholder={t.pasteOrderDetails} style={{...styles.input, height: '150px'}} />
+                            <textarea value={massOrderText} onChange={e => setMassOrderText(e.target.value)} placeholder={t.pasteOrderDetails} style={{...styles.input, height: '150px'}} />
                         )}
-                        <button onClick={() => handleProcessMassOrder(massOrderFile, "")} disabled={isProcessingMassOrder} style={isProcessingMassOrder ? {...styles.button, ...styles.buttonDisabled} : styles.button}>
+                        <button onClick={() => handleProcessMassOrder(massOrderFile, massOrderText)} disabled={isProcessingMassOrder} style={isProcessingMassOrder ? {...styles.button, ...styles.buttonDisabled} : styles.button}>
                             {isProcessingMassOrder ? t.analyzing : t.submitData}
                         </button>
                     </>
@@ -930,7 +931,7 @@ const App = () => {
                         onDeleteItem={handleDeleteOrderItem}
                         onAddRow={handleAddOrderRow}
                         onConfirm={() => setMassOrderStep('confirm')}
-                        onClear={() => { setExtractedOrderItems([]); setMassOrderStep('input'); setMassOrderComment(''); setExternalOrderNumber(''); }}
+                        onClear={() => { setExtractedOrderItems([]); setMassOrderStep('input'); setMassOrderComment(''); setExternalOrderNumber(''); setMassOrderText(''); }}
                         t={t}
                         comment={massOrderComment}
                         onCommentChange={setMassOrderComment}
@@ -960,7 +961,7 @@ const App = () => {
                      <div style={{textAlign: 'center', padding: '40px'}}>
                          <div style={{fontSize: '4em', color: '#4CAF50', marginBottom: '20px'}}><i className="fa-solid fa-circle-check"></i></div>
                          <h2 style={{color: PRIMARY_COLOR}}>{t.orderSuccessMessage}</h2>
-                         <button onClick={() => { setMassOrderStep('input'); setExtractedOrderItems([]); setMassOrderComment(''); setExternalOrderNumber(''); }} style={{...styles.button, marginTop: '20px'}}>
+                         <button onClick={() => { setMassOrderStep('input'); setExtractedOrderItems([]); setMassOrderComment(''); setExternalOrderNumber(''); setMassOrderText(''); }} style={{...styles.button, marginTop: '20px'}}>
                              {t.startOver}
                          </button>
                      </div>

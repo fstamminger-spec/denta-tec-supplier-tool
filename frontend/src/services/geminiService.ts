@@ -3,6 +3,28 @@ import { BACKEND_URL } from "../config";
 
 const AI_ERROR_MSG = "AI Service unavailable. Please try again later.";
 
+function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+}
+
+function getMimeType(file: File): string {
+    if (file.type) return file.type;
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    const mimeMap: Record<string, string> = {
+        pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg',
+        jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+    };
+    return mimeMap[ext || ''] || 'application/octet-stream';
+}
+
 export const geminiService = {
     getGoogleShoppingHeaderMapping: async (originalHeaders: string[]): Promise<Record<string, string | null>> => {
         const prompt = `You are an expert in product data and shopping feeds. Analyze the following list of column headers from a supplier file: ${JSON.stringify(originalHeaders)}.
@@ -16,7 +38,7 @@ export const geminiService = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: 'gemini-2.5-flash',
+                    model: 'gemini-flash-latest',
                     contents: [{ parts: [{ text: prompt }] }],
                     config: { responseMimeType: "application/json" }
                 })
@@ -52,7 +74,7 @@ export const geminiService = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: 'gemini-2.5-flash',
+                    model: 'gemini-flash-latest',
                     contents: [{ parts: [{ text: prompt }] }]
                 })
             });
@@ -76,7 +98,7 @@ export const geminiService = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: 'gemini-2.5-flash',
+                    model: 'gemini-flash-latest',
                     contents: [{ parts: [{ text: contextText }] }],
                     config: { responseMimeType: "application/json" }
                 })
@@ -106,7 +128,7 @@ export const geminiService = {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: 'gemini-2.5-flash',
+                    model: 'gemini-flash-latest',
                     contents: [{ parts: [{ text: identificationPrompt }] }]
                 })
             });
@@ -130,15 +152,26 @@ export const geminiService = {
     },
 
     processMassOrderAI: async (inputType: 'text' | 'file', textOrFile: string | File): Promise<any> => {
-        // For simplicity in this granular update, we will handle file uploads in the backend if needed,
-        // but for now, text processing is prioritized. 
-        const prompt = `Analyze the bulk order input. Extract structured order data.
-      Extract: Order number, Line items (productNumber, productName, quantity, price), Special instructions.
-      Respond with JSON.`;
+        const prompt = `Analyze this purchase order document.
+Extract the order number and all line items (productNumber, productName, quantity, price), and any special instructions.
+Respond ONLY with JSON matching this exact schema:
+{
+  "orderNumber": "string",
+  "items": [
+    { "productNumber": "string", "productName": "string", "quantity": 1, "price": 10.5 }
+  ],
+  "specialInstructions": "string"
+}`;
 
-        const parts: any[] = [{ text: prompt }];
+        const parts: any[] = [];
 
-        if (inputType === 'text') {
+        if (inputType === 'file' && textOrFile instanceof File) {
+            const base64Data = await fileToBase64(textOrFile);
+            const mimeType = getMimeType(textOrFile);
+            parts.push({ inlineData: { mimeType, data: base64Data } });
+            parts.push({ text: prompt });
+        } else {
+            parts.push({ text: prompt });
             parts.push({ text: textOrFile as string });
         }
 
@@ -148,7 +181,7 @@ export const geminiService = {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     model: 'gemini-2.5-flash',
-                    contents: [{ parts }],
+                    contents: [{ role: 'user', parts }],
                     config: { responseMimeType: "application/json" }
                 })
             });
@@ -158,14 +191,30 @@ export const geminiService = {
     },
 
     findBestMatchAI: async (item: { productNumber: string, productName?: string }, catalogContextString: string): Promise<string | null> => {
-        const prompt = `You are a product matching expert. Find best SKU. Catalog: ${catalogContextString}. Item: ${JSON.stringify(item)}. Return JSON { "matchedSku": "..." }`;
+        const prompt = `You are a dental product matching expert. Find the best matching product SKU from the catalog for the given order item.
+
+IMPORTANT matching rules:
+- SKU prefixes may differ between brands (e.g., "WP-" for Woodpecker, "xp-" for Xpedent) but the product code after the prefix is the key identifier
+- Match by product type, model number, and compatibility system (EMS, Satelec/SAT, KaVo/KAV, NSK)
+- A Woodpecker tip "WP-E10D-EMS" should match an Xpedent equivalent "xp-E10D-EMS" if the model number (E10D) and system (EMS) match
+- Consider that products may be listed under different brand names but serve the same function
+- Only return null if there is truly no comparable product in the catalog
+
+Catalog (format: sku|produktname|marke|hersteller-nr.):
+${catalogContextString}
+
+Order item to match:
+Product Number: ${item.productNumber}
+Product Name: ${item.productName || 'N/A'}
+
+Respond ONLY with JSON: { "matchedSku": "sku_here" } or { "matchedSku": null } if no match exists.`;
         try {
             const response = await fetch(`${BACKEND_URL}/api/gemini/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     model: 'gemini-2.5-flash',
-                    contents: [{ parts: [{ text: prompt }] }],
+                    contents: [{ role: 'user', parts: [{ text: prompt }] }],
                     config: { responseMimeType: "application/json" }
                 })
             });
