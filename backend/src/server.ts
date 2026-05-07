@@ -143,7 +143,7 @@ app.post('/api/login', async (req, res) => {
             columns: header => header.map((h: string) => normalizeFieldName(h)),
             skip_empty_lines: true,
             trim: true,
-            relax_quotes: true,
+            quote: false,
             relax_column_count: true
         });
 
