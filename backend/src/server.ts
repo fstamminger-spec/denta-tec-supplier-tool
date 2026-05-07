@@ -38,7 +38,7 @@ app.use(express.json({ limit: '50mb' }));
 // Serve static files from the 'public' folder
 app.use(express.static(path.join(__dirname, '../public')));
 
-const API_KEY = process.env.API_KEY || "";
+const API_KEY = process.env.API_KEY || process.env.GEMINI_API_KEY || "";
 if (!API_KEY) {
     console.error("WARNING: API_KEY is not set in environment variables!");
 }
@@ -58,7 +58,7 @@ const ALLOWED_PROXY_DOMAINS = [
     'customer-partner-login-320280941237.europe-west3.run.app',
 ];
 
-const genAI = new (GoogleGenAI as any)({ apiKey: API_KEY });
+const genAI = new GoogleGenAI({ apiKey: API_KEY });
 const storage = new Storage();
 const BUCKET_NAME = "bi-and-customer-data";
 
@@ -414,10 +414,8 @@ app.post('/api/virtual-marketer', async (req, res) => {
 app.post('/api/gemini/generate', async (req, res) => {
     const { model, contents, config } = req.body;
     try {
-        const aiModel = (genAI as any).getGenerativeModel({ model });
-        const result = await aiModel.generateContent({ contents, ...config });
-        const response = await result.response;
-        res.json({ text: response.text() });
+        const result = await genAI.models.generateContent({ model, contents, config });
+        res.json({ text: result.text });
     } catch (error: any) {
         console.error("Gemini error:", error.message);
         res.status(500).json({ error: error.message });
@@ -428,12 +426,15 @@ app.post('/api/gemini/generate', async (req, res) => {
 app.post('/api/gemini/visualize', async (req, res) => {
     const { contents } = req.body;
     try {
-        const aiModel = (genAI as any).getGenerativeModel({ model: 'gemini-2.0-flash' }); // Updated model
-        const result = await aiModel.generateContent({ contents, config: { responseModalities: [Modality.IMAGE] } });
-        const response = await result.response;
+        const result = await genAI.models.generateContent({
+            model: 'gemini-2.0-flash',
+            contents,
+            config: { responseModalities: [Modality.IMAGE] }
+        });
 
-        if (response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data) {
-            res.json({ image: response.candidates[0].content.parts[0].inlineData.data });
+        const inlineData = result.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+        if (inlineData?.data) {
+            res.json({ image: inlineData.data });
         } else {
             res.status(500).send("No image generated");
         }
