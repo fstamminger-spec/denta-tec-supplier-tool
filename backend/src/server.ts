@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { Storage } from '@google-cloud/storage';
 import { parse } from 'csv-parse/sync';
 import jwt from 'jsonwebtoken';
+import { body, param, query, validationResult } from 'express-validator';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +53,14 @@ if (!XENTRAL_FEED_URL) {
 const VIRTUAL_MARKETER_API_KEY = process.env.VIRTUAL_MARKETER_API_KEY || "";
 
 const AUTH_SECRET = process.env.AUTH_KEY || 'dev-secret';
+
+function handleValidationErrors(req: any, res: any, next: any) {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+    }
+    next();
+}
 
 function requireAuth(req: any, res: any, next: any) {
     const header = req.headers.authorization;
@@ -131,7 +140,20 @@ function getFromRowVariants(row: any, variants: string[]): string | null {
 
 // --- ENDPOINTS ---
 
-app.post('/api/login', async (req, res) => {
+// Login validation
+const loginValidation = [
+    body('email')
+        .isEmail().withMessage('Invalid email format')
+        .normalizeEmail()
+        .isLength({ max: 254 }).withMessage('Email too long'),
+    body('password')
+        .isString().withMessage('Password must be a string')
+        .isLength({ min: 1, max: 128 }).withMessage('Password must be between 1 and 128 characters')
+        .trim(),
+    handleValidationErrors
+];
+
+app.post('/api/login', loginValidation, async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
         return res.status(400).json({ error: "Feld 'email' oder 'password' fehlt." });
@@ -215,7 +237,16 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-app.post('/api/orders', requireAuth, async (req: any, res) => {
+// Orders validation
+const ordersValidation = [
+    body('customer_number')
+        .isString().withMessage('customer_number must be a string')
+        .isLength({ min: 1, max: 64 }).withMessage('customer_number must be between 1 and 64 characters')
+        .trim(),
+    handleValidationErrors
+];
+
+app.post('/api/orders', requireAuth, ordersValidation, async (req: any, res) => {
     const { customer_number } = req.body;
     if (!customer_number) {
         return res.status(400).json({ error: "Feld 'customer_number' fehlt." });
@@ -365,7 +396,16 @@ function isBlockedGetUrl(targetUrl: string): boolean {
 }
 
 // Proxy for Feed URLs to avoid CORS (GET — blocks internal IPs)
-app.get('/api/proxy-feed', requireAuth, async (req, res) => {
+// Proxy feed GET validation
+const proxyFeedGetValidation = [
+    query('url')
+        .isString().withMessage('url must be a string')
+        .isURL({ require_protocol: true }).withMessage('url must be a valid URL')
+        .isLength({ max: 2048 }).withMessage('url too long'),
+    handleValidationErrors
+];
+
+app.get('/api/proxy-feed', requireAuth, proxyFeedGetValidation, async (req, res) => {
     const { url } = req.query;
     if (!url) return res.status(400).send("URL is required");
     if (isBlockedGetUrl(url as string)) return res.status(403).send("URL not allowed");
@@ -388,8 +428,24 @@ app.get('/api/proxy-feed', requireAuth, async (req, res) => {
     }
 });
 
+// Proxy feed POST validation
+const proxyFeedPostValidation = [
+    query('url')
+        .isString().withMessage('url must be a string')
+        .isURL({ require_protocol: true }).withMessage('url must be a valid URL')
+        .isLength({ max: 2048 }).withMessage('url too long'),
+    body().custom(body => {
+        if (body === undefined || body === null) return true;
+        if (typeof body !== 'object') {
+            throw new Error('Request body must be a JSON object');
+        }
+        return true;
+    }),
+    handleValidationErrors
+];
+
 // Proxy for POST requests (order submission, email, GCS signing — strict domain allowlist)
-app.post('/api/proxy-feed', requireAuth, async (req, res) => {
+app.post('/api/proxy-feed', requireAuth, proxyFeedPostValidation, async (req, res) => {
     const url = req.query.url as string;
     if (!url) return res.status(400).send("URL is required");
     if (!isAllowedPostDomain(url)) return res.status(403).send("Domain not allowed");
@@ -416,6 +472,9 @@ app.post('/api/virtual-marketer', requireAuth, async (req, res) => {
     if (!VIRTUAL_MARKETER_API_KEY) return res.status(500).json({ error: "VIRTUAL_MARKETER_API_KEY not configured" });
 
     const allowedEndpoints = ['/api/product', '/api/ai'];
+    if (!endpoint || typeof endpoint !== 'string') {
+        return res.status(400).json({ error: "endpoint is required and must be a string" });
+    }
     if (!allowedEndpoints.includes(endpoint)) return res.status(403).json({ error: "Endpoint not allowed" });
 
     try {
@@ -436,7 +495,16 @@ app.post('/api/virtual-marketer', requireAuth, async (req, res) => {
 
 // --- DEDICATED AI ENDPOINTS (all require auth) ---
 
-app.post('/api/ai/extract-order', requireAuth, async (req, res) => {
+// AI extract-order validation
+const extractOrderValidation = [
+    body('type').optional().isIn(['file', 'text']).withMessage('type must be "file" or "text"'),
+    body('text').optional().isString().withMessage('text must be a string').isLength({ max: 100000 }).withMessage('text too long'),
+    body('fileBase64').optional().isString().withMessage('fileBase64 must be a string'),
+    body('mimeType').optional().isString().withMessage('mimeType must be a string'),
+    handleValidationErrors
+];
+
+app.post('/api/ai/extract-order', requireAuth, extractOrderValidation, async (req, res) => {
     const { type, text, fileBase64, mimeType } = req.body;
     const prompt = `Analyze this purchase order document.
 Extract the order number and all line items (productNumber, productName, quantity, price), and any special instructions.
@@ -473,6 +541,18 @@ Respond ONLY with JSON matching this exact schema:
 
 app.post('/api/ai/match-product', requireAuth, async (req, res) => {
     const { productNumber, productName, catalogContext } = req.body;
+    
+    // Input validation
+    if (typeof productNumber !== 'string' || productNumber.length === 0 || productNumber.length > 256) {
+        return res.status(400).json({ error: 'productNumber must be a non-empty string up to 256 characters' });
+    }
+    if (productName !== undefined && (typeof productName !== 'string' || productName.length > 1000)) {
+        return res.status(400).json({ error: 'productName must be a string up to 1000 characters' });
+    }
+    if (catalogContext !== undefined && (typeof catalogContext !== 'string' || catalogContext.length > 50000)) {
+        return res.status(400).json({ error: 'catalogContext must be a string up to 50000 characters' });
+    }
+
     const prompt = `You are a dental product matching expert. Find the best matching product SKU from the catalog for the given order item.
 
 IMPORTANT matching rules:
@@ -506,6 +586,15 @@ Respond ONLY with JSON: { "matchedSku": "sku_here" } or { "matchedSku": null } i
 
 app.post('/api/ai/map-headers', requireAuth, async (req, res) => {
     const { headers } = req.body;
+    
+    // Input validation
+    if (!Array.isArray(headers)) {
+        return res.status(400).json({ error: 'headers must be an array' });
+    }
+    if (headers.length > 500) {
+        return res.status(400).json({ error: 'headers array too long (max 500)' });
+    }
+    
     const prompt = `You are an expert in product data and shopping feeds. Analyze the following list of column headers from a supplier file: ${JSON.stringify(headers)}.
 
 Map them to the standard Google Shopping attributes: 'id', 'title', 'description', 'link', 'image_link', 'price', 'brand', 'gtin', 'mpn', 'cost_of_goods_sold'.
@@ -527,6 +616,18 @@ Respond ONLY with a single JSON object where keys are the original headers and v
 
 app.post('/api/ai/optimize-title', requireAuth, async (req, res) => {
     const { title, description, brand } = req.body;
+    
+    // Input validation
+    if (typeof title !== 'string' || title.length === 0 || title.length > 500) {
+        return res.status(400).json({ error: 'title must be a non-empty string up to 500 characters' });
+    }
+    if (description !== undefined && typeof description !== 'string') {
+        return res.status(400).json({ error: 'description must be a string' });
+    }
+    if (brand !== undefined && (typeof brand !== 'string' || brand.length > 100)) {
+        return res.status(400).json({ error: 'brand must be a string up to 100 characters' });
+    }
+    
     const prompt = `Optimize this product title for Google Shopping SEO (German).
 Current Title: "${title}"
 Brand: "${brand || ''}"
@@ -552,6 +653,15 @@ Rules:
 
 app.post('/api/ai/analyze-product', requireAuth, async (req, res) => {
     const { title, description } = req.body;
+    
+    // Input validation
+    if (typeof title !== 'string' || title.length === 0 || title.length > 500) {
+        return res.status(400).json({ error: 'title must be a non-empty string up to 500 characters' });
+    }
+    if (description !== undefined && typeof description !== 'string') {
+        return res.status(400).json({ error: 'description must be a string' });
+    }
+    
     const prompt = `Analyze product "${title}" & desc "${(description || '').substring(0, 1000)}".
 1. Dominant color (or 'Multicolor').
 2. Google Product Category string.
@@ -574,6 +684,15 @@ Output JSON.`;
 
 app.post('/api/ai/visualize-product', requireAuth, async (req, res) => {
     const { title, description } = req.body;
+    
+    // Input validation
+    if (typeof title !== 'string' || title.length === 0 || title.length > 500) {
+        return res.status(400).json({ error: 'title must be a non-empty string up to 500 characters' });
+    }
+    if (description !== undefined && typeof description !== 'string') {
+        return res.status(400).json({ error: 'description must be a string' });
+    }
+    
     const identificationPrompt = `Context: Product "${title}". Description: "${(description || '').substring(0, 500)}".
 Task: Create a prompt for an AI image generator to generate a photorealistic "Action Shot".
 Output ONLY the prompt text.`;
