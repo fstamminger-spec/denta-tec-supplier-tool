@@ -226,10 +226,11 @@ app.post('/api/orders', requireAuth, async (req: any, res) => {
 
     try {
         const csvDataString = await fetchCSVData("order_data.csv");
-        // We use raw parse here to reproduce the manual index lookup if headers are inconsistent
         const records: string[][] = parse(csvDataString, {
             skip_empty_lines: true,
-            trim: true
+            trim: true,
+            quote: false,
+            relax_column_count: true
         });
 
         if (records.length === 0) return res.json([]);
